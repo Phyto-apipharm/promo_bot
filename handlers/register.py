@@ -2,6 +2,7 @@ from aiogram import Router, F
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.filters.command import Command
 
 from sheets import append_data_to_sheet
 from handlers.repeat_order import phone_keyboard, new_order_button
@@ -33,6 +34,11 @@ async def repeat_order(message: Message, state: FSMContext):
     else:
         await message.answer("❗ Не найдены данные. Начните регистрацию заново.")
         await state.clear()
+
+# Игнорируем команды в ожидании номера заказа
+@router.message(Registration.waiting_for_order, F.text.startswith("/"))
+async def ignore_commands_in_order(message: Message):
+    await message.answer("⚠️ Пожалуйста, введите номер заказа, а не команду.")
 
 @router.message(Registration.waiting_for_order)
 async def order_received(message: Message, state: FSMContext):
