@@ -13,6 +13,11 @@ class Registration(StatesGroup):
     waiting_for_id = State()
     waiting_for_order = State()
 
+@router.message(Command("clear"))
+async def cmd_clear(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("🔄 Состояние очищено. Вы можете начать заново.")
+
 @router.message(F.contact)
 async def process_contact(message: Message, state: FSMContext):
     await state.update_data(phone=message.contact.phone_number)
