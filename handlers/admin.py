@@ -105,7 +105,7 @@ async def handle_approval(callback: CallbackQuery, state: FSMContext):
             if tg_id and str(tg_id).isdigit():
                 await callback.bot.send_message(
                     int(tg_id),
-                    "⚠️ Ваша заявка не прошла проверку и была отклонена.\nПроверьте правильность ID и номера заказа и попробуйте снова.",
+                    "⚠️ Ваша заявка не прошла проверку и была отклонена.\nПроверьте правильность ваших данных и попробуйте снова.\nЕсли у вас есть вопросы, обратитесь к менеджеру @Phyto_apipharm_uz",
                 )
         except Exception:
             pass  # не удалось отправить — продолжаем
