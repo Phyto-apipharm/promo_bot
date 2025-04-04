@@ -1,72 +1,80 @@
-from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery
+import asyncio
+from aiogram import F, Router
 from aiogram.filters import Command
+from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.state import StatesGroup, State
 
-from config import ADMIN_IDS, BOT_TOKEN
+from config import ADMIN_IDS
+from handlers.repeat_order import admin_keyboard, approve_keyboard
 from sheets import get_sheet
 
 router = Router()
-bot = Bot(token=BOT_TOKEN)
 
-
-class ApproveState(StatesGroup):
-    approving = State()
-
-
-def get_next_unapproved_row(sheet):
-    all_rows = sheet.get_all_values()
-    for index, row in enumerate(all_rows[1:], start=2):
-        if len(row) < 6 or not row[5].strip():
-            return index, row
-    return None, None
-
-
-def get_approval_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Одобрить", callback_data="approve_order"),
-            InlineKeyboardButton(text="❌ Отклонить", callback_data="deny_order")
-        ]
-    ])
-
+class BroadcastState(StatesGroup):
+    waiting_for_text = State()
 
 @router.message(Command("admin"))
-async def admin_panel(message: Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("❌ У вас нет доступа к этой функции.")
+async def admin_panel(message: Message):
+    if message.from_user.id in ADMIN_IDS:
+        await message.answer("👨‍💼 Добро пожаловать в админ-панель", reply_markup=admin_keyboard)
+    else:
+        await message.answer("❌ У вас нет доступа к этой команде.")
+
+# 👉 Универсальный показ заявок (Message или CallbackQuery)
+async def start_approving(event, state: FSMContext):
+    user_id = event.from_user.id
+
+    if user_id not in ADMIN_IDS:
+        if isinstance(event, CallbackQuery):
+            await event.answer("❌ У вас нет доступа к этой функции.")
+        else:
+            await event.answer("❌ У вас нет доступа к этой функции.")
         return
 
+    sheet = get_sheet()
+    data = sheet.get_all_values()
+
+    for idx, row in enumerate(data[1:], start=2):  # Пропускаем заголовки
+        if len(row) < 6 or row[6]:  # Статус уже есть
+            continue
+
+        text = (
+            f"<b>📦 Заявка</b>\n\n"
+            f"📞 Телефон: {row[0]}\n"
+            f"🆔 ID: {row[3]}\n"
+            f"📦 Заказ: {row[4]}\n"
+            f"📅 Дата: {row[5]}"
+        )
+
+        await state.set_data({"row_index": idx, "tg_id": row[2]})  # сохраняем также tg_id
+
+        if isinstance(event, CallbackQuery):
+            await event.message.answer(
+                text,
+                reply_markup=approve_keyboard,
+                parse_mode="HTML"
+            )
+        else:
+            await event.answer(
+                text,
+                reply_markup=approve_keyboard,
+                parse_mode="HTML"
+            )
+        return
+
+    # Если заявок нет
+    if isinstance(event, CallbackQuery):
+        await event.message.answer("✅ Все заказы были проверены.")
+    else:
+        await event.answer("✅ Все заказы были проверены.")
+
+# 👉 Обработка кнопки "📋 Одобрение заказов"
+@router.message(F.text == "📋 Одобрение заказов")
+async def admin_start_approval(message: Message, state: FSMContext):
     await start_approving(message, state)
 
-
-async def start_approving(message_or_callback, state: FSMContext):
-    sheet = get_sheet()
-    index, row = get_next_unapproved_row(sheet)
-
-    if not row:
-        await message_or_callback.answer("✅ Нет необработанных заявок.")
-        return
-
-    user_info = (
-        f"<b>📞 Телефон:</b> {row[0]}\n"
-        f"<b>👤 Username:</b> @{row[1]}\n"
-        f"<b>🆔 Telegram ID:</b> {row[2]}\n"
-        f"<b>🪪 ID участника:</b> {row[3]}\n"
-        f"<b>📦 Номер заказа:</b> {row[4]}\n"
-        f"<b>🕓 Время:</b> {row[5]}"
-    )
-
-    await state.update_data(row_index=index)
-
-    if isinstance(message_or_callback, Message):
-        await message_or_callback.answer(user_info, reply_markup=get_approval_keyboard(), parse_mode="HTML")
-    else:
-        await message_or_callback.message.edit_text(user_info, reply_markup=get_approval_keyboard(), parse_mode="HTML")
-
-
+# 👉 Обработка кнопок ✅ / ❌
 @router.callback_query(F.data.in_(["approve_order", "deny_order"]))
 async def handle_approval(callback: CallbackQuery, state: FSMContext):
     admin_id = callback.from_user.id
@@ -77,35 +85,66 @@ async def handle_approval(callback: CallbackQuery, state: FSMContext):
 
     data = await state.get_data()
     row_index = data.get("row_index")
+    tg_id = data.get("tg_id")
 
     if not row_index:
         await callback.answer("⚠️ Нет активной заявки.")
         return
 
     sheet = get_sheet()
-    row = sheet.row_values(row_index)
 
     if callback.data == "approve_order":
-        sheet.update_cell(row_index, 6, "Одобрено ✅")
+        sheet.update_cell(row_index, 7, "Одобрено")
         await callback.answer("✅ Заявка одобрена")
-
     elif callback.data == "deny_order":
-        sheet.update_cell(row_index, 6, "Отклонено ❌")
+        sheet.delete_rows(row_index)
         await callback.answer("❌ Заявка отклонена")
 
-        # ⛔ Уведомляем пользователя при отклонении
-        if len(row) >= 3 and row[2].isdigit():
-            try:
-                await bot.send_message(
-                    chat_id=int(row[2]),
-                    text=(
-                        "⚠️ Ваш заказ был отклонён.\n\n"
-                        "Проверьте правильность ID и номера заказа.\n"
-                        "Если у вас возникли вопросы, обратитесь к своему менеджеру."
-                    )
+        # Рассылка пользователю
+        try:
+            if tg_id and str(tg_id).isdigit():
+                await callback.bot.send_message(
+                    int(tg_id),
+                    "⚠️ Ваша заявка не прошла проверку и была отклонена.\nПроверьте правильность ID и номера заказа и попробуйте снова.",
                 )
-            except Exception as e:
-                print(f"❗ Ошибка при отправке уведомления: {e}")
+        except Exception:
+            pass  # не удалось отправить — продолжаем
 
-    # Показать следующую заявку
+    # Показать следующую
     await start_approving(callback, state)
+
+# 📤 Обработка кнопки "Отправить рассылку"
+@router.message(F.text == "📤 Отправить рассылку")
+async def ask_broadcast_text(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("❌ У вас нет доступа к этой функции.")
+        return
+    await state.set_state(BroadcastState.waiting_for_text)
+    await message.answer("✏️ Введите текст рассылки, и я отправлю его всем пользователям.")
+
+# ✅ Отправка рассылки по уникальным Telegram ID
+@router.message(BroadcastState.waiting_for_text)
+async def send_broadcast(message: Message, state: FSMContext):
+    sheet = get_sheet()
+    data = sheet.get_all_values()[1:]  # Пропускаем заголовки
+
+    tg_ids = set()
+    sent = 0
+    failed = 0
+
+    for row in data:
+        if len(row) >= 3:
+            tg_id = row[2]
+            if tg_id.isdigit():
+                tg_ids.add(int(tg_id))
+
+    for tg_id in tg_ids:
+        try:
+            await message.bot.send_message(tg_id, message.text)
+            sent += 1
+            await asyncio.sleep(0.2)
+        except Exception:
+            failed += 1
+
+    await message.answer(f"📤 Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибок: {failed}")
+    await state.clear()
